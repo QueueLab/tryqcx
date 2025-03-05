@@ -1,10 +1,12 @@
 import { TwitterApi } from 'twitter-api-v2';
-import { Configuration, OpenAIApi } from 'openai';
+import AWS from 'aws-sdk';
 
 const twitterClient = new TwitterApi(process.env.TWITTER_BEARER_TOKEN);
-const openai = new OpenAIApi(new Configuration({
-  apiKey: process.env.OPENAI_API_KEY,
-}));
+const bedrock = new AWS.Bedrock({
+  apiVersion: '2019-11-24',
+  region: 'us-west-2',
+  credentials: new AWS.Credentials(process.env.AWS_ACCESS_KEY_ID, process.env.AWS_SECRET_ACCESS_KEY)
+});
 
 export default async function handler(req, res) {
   const { location } = req.query;
@@ -17,32 +19,34 @@ export default async function handler(req, res) {
     // Search for tweets about the location
     const tweets = await twitterClient.v2.search(`place:${location}`);
 
-    // Use OpenAI GPT-3 to understand the content of the tweets
+    // Use AWS Bedrock's Claude 3.7 Sonnet to understand the content of the tweets
     const tweetContents = tweets.data.map(tweet => tweet.text);
-    const gpt3Responses = await Promise.all(tweetContents.map(async (content) => {
-      const response = await openai.createCompletion({
-        model: 'text-davinci-002',
-        prompt: `Understand the following tweet and generate a response: ${content}`,
-        max_tokens: 50,
-      });
-      return response.data.choices[0].text.trim();
+    const bedrockResponses = await Promise.all(tweetContents.map(async (content) => {
+      const response = await bedrock.invokeModel({
+        modelId: 'claude-3.7-sonnet',
+        body: JSON.stringify({
+          prompt: `Understand the following tweet and generate a response in the form of a question: ${content}`,
+          maxTokens: 50
+        })
+      }).promise();
+      return JSON.parse(response.body).choices[0].text.trim();
     }));
 
     // Classify the intent of the tweets
     const intents = await Promise.all(tweetContents.map(async (tweet) => {
-      const intentResponse = await openai.chat.completions.create({
-        model: "gpt-4-turbo",
-        messages: [
-          { role: "system", content: "You are an expert at understanding user queries related to locations. Classify the intent of this tweet into one of the following categories: 'food', 'sightseeing', 'lodging', 'events', 'transport', 'other'." },
-          { role: "user", content: `Tweet: "${tweet}" | Location: "${location}"` }
-        ]
-      });
-      return intentResponse.choices[0].message.content.trim();
+      const intentResponse = await bedrock.invokeModel({
+        modelId: 'claude-3.7-sonnet',
+        body: JSON.stringify({
+          prompt: `You are an expert at understanding user queries related to locations. Classify the intent of this tweet into one of the following categories: 'food', 'sightseeing', 'lodging', 'events', 'transport', 'other'. Tweet: "${tweet}" | Location: "${location}"`,
+          maxTokens: 50
+        })
+      }).promise();
+      return JSON.parse(intentResponse.body).choices[0].text.trim();
     }));
 
     // Reply to the tweets accordingly
     const replyPromises = tweets.data.map((tweet, index) => {
-      return twitterClient.v2.reply(gpt3Responses[index], tweet.id);
+      return twitterClient.v2.reply(bedrockResponses[index], tweet.id);
     });
     await Promise.all(replyPromises);
 
