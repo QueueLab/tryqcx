@@ -1,2 +1,1 @@
-# Tryqcx
-A repository for a Next.js AI SDK Vercel server function to interact with tweets
+This repository is empty. Any task executed on it should be considered a new capability and needs to be created.
